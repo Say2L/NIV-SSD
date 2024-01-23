@@ -3,7 +3,7 @@ import torch
 from ...ops.iou3d_nms import iou3d_nms_utils
 
 
-def class_agnostic_nms(box_scores, box_preds, nms_config, score_thresh=None):
+def class_agnostic_nms(box_scores, box_preds, nms_config, score_thresh=None, **kwargs):
     src_box_scores = box_scores
     if score_thresh is not None:
         scores_mask = (box_scores >= score_thresh)
@@ -24,7 +24,7 @@ def class_agnostic_nms(box_scores, box_preds, nms_config, score_thresh=None):
         selected = original_idxs[selected]
     return selected, src_box_scores[selected]
 
-def class_agnostic_niv_nms(box_scores, box_preds, nms_config, norm_size=6, niv_weight=1, score_thresh=None):
+def class_agnostic_niv_nms(box_scores, box_preds, nms_config, norm_size=6, niv_weight=1, score_thresh=None, **kwargs):
     src_box_scores = box_scores
     if score_thresh is not None:
         scores_mask = (box_scores >= score_thresh)
@@ -49,6 +49,57 @@ def class_agnostic_niv_nms(box_scores, box_preds, nms_config, norm_size=6, niv_w
 
     return selected, niv_scores
 
+def class_agnostic_iou_nms(box_scores, iou_preds, box_preds, nms_config, score_thresh=None, **kwargs):
+    src_box_scores = box_scores
+    if score_thresh is not None:
+        scores_mask = (box_scores >= score_thresh)
+        box_scores = box_scores[scores_mask]
+        box_ious = iou_preds[scores_mask]
+        box_preds = box_preds[scores_mask]
+
+    selected = []
+    if box_scores.shape[0] > 0:
+        box_ious = (box_ious + 1) * 0.5
+        box_scores = torch.pow(box_scores, 0.3) * torch.pow(box_ious, 0.7)
+        box_scores_nms, indices = torch.topk(box_scores, k=min(nms_config.NMS_PRE_MAXSIZE, box_scores.shape[0]))
+        boxes_for_nms = box_preds[indices]
+        keep_idx, selected_scores = getattr(iou3d_nms_utils, nms_config.NMS_TYPE)(
+                boxes_for_nms[:, 0:7], box_scores_nms, nms_config.NMS_THRESH, **nms_config
+        )
+        selected = indices[keep_idx[:nms_config.NMS_POST_MAXSIZE]]
+
+    if score_thresh is not None:
+        original_idxs = scores_mask.nonzero().view(-1)
+        selected = original_idxs[selected]
+    return selected, src_box_scores[selected]
+
+def class_agnostic_iou_niv_nms(box_scores, iou_preds, box_preds, nms_config, norm_size=6, niv_weight=1, score_thresh=None, alpha=0.7):
+    src_box_scores = box_scores
+    if score_thresh is not None:
+        scores_mask = (box_scores >= score_thresh)
+        box_scores = box_scores[scores_mask]
+        box_ious = iou_preds[scores_mask]
+        box_preds = box_preds[scores_mask]
+    
+    selected = []
+    if box_scores.shape[0] > 0:
+        box_ious = (box_ious + 1) * 0.5
+        box_scores = torch.pow(box_scores, 1 - alpha) * torch.pow(box_ious, alpha)
+        box_scores_nms, indices = torch.topk(box_scores, k=min(nms_config.NMS_PRE_MAXSIZE, box_scores.shape[0]))
+        boxes_for_nms = box_preds[indices]
+        keep_idx, niv_scores = getattr(iou3d_nms_utils, 'niv_nms_gpu')(
+                boxes_for_nms[:, 0:7], box_scores_nms, nms_config.NMS_THRESH, 
+                norm_size=norm_size, niv_weight=niv_weight, **nms_config
+        )
+        selected = indices[keep_idx[:nms_config.NMS_POST_MAXSIZE]]
+    else:
+        niv_scores = torch.tensor([])
+
+    if score_thresh is not None:
+        original_idxs = scores_mask.nonzero().view(-1)
+        selected = original_idxs[selected]
+
+    return selected, niv_scores
 
 def multi_classes_nms(cls_scores, box_preds, nms_config, score_thresh=None):
     """

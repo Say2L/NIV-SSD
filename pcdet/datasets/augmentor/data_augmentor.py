@@ -77,21 +77,23 @@ class DataAugmentor(object):
     def random_world_rotation(self, data_dict=None, config=None):
         if data_dict is None:
             return partial(self.random_world_rotation, config=config)
-        rot_range = config['WORLD_ROT_ANGLE']
-        if not isinstance(rot_range, list):
-            rot_range = [-rot_range, rot_range]
-        gt_boxes, points, noise_rot = augmentor_utils.global_rotation(
-            data_dict['gt_boxes'], data_dict['points'], rot_range=rot_range, return_rot=True
-        )
-        if 'roi_boxes' in data_dict.keys():
-            num_frame, num_rois,dim = data_dict['roi_boxes'].shape
-            roi_boxes, _, _ = augmentor_utils.global_rotation(
-            data_dict['roi_boxes'].reshape(-1, dim), np.zeros([1, 3]), rot_range=rot_range, return_rot=True, noise_rotation=noise_rot)
-            data_dict['roi_boxes'] = roi_boxes.reshape(num_frame, num_rois,dim)
-
+        
+        gt_boxes, points = data_dict['gt_boxes'], data_dict['points']
+        for cur_axis in config.get('ALONG_AXIS_LIST'):
+            assert cur_axis in ['x', 'y', 'z']
+            rot_range = config.get('WORLD_ROT_ANGLE_%s' % cur_axis.upper())
+            if not isinstance(rot_range, list):
+                rot_range = [-rot_range, rot_range]
+            gt_boxes, points = getattr(augmentor_utils, 'global_rotation_along_%s' % cur_axis)(
+                gt_boxes, points, rot_range=rot_range
+            )
         data_dict['gt_boxes'] = gt_boxes
         data_dict['points'] = points
-        data_dict['noise_rot'] = noise_rot
+
+        """gt_boxes = deepcopy(data_dict['gt_boxes'])
+        points = deepcopy(data_dict['points'])
+        draw_scenes(points, gt_boxes)"""
+
         return data_dict
 
     def random_world_scaling(self, data_dict=None, config=None):
@@ -285,6 +287,37 @@ class DataAugmentor(object):
             new_imgs.append(img)
 
         data_dict["camera_imgs"] = new_imgs
+        return data_dict
+    
+    def per_object_local_aug(self, data_dict=None, config=None):
+        """
+        Please check the correctness of it before using.
+        """
+        if data_dict is None:
+            return partial(self.per_object_local_aug, config=config)
+
+        """gt_boxes = deepcopy(data_dict['gt_boxes'])[data_dict['gt_boxes_mask']]
+        points = deepcopy(data_dict['points'])
+        draw_scenes(points, gt_boxes)"""
+
+        gt_boxes, points = augmentor_utils.noise_per_object_v4(
+            data_dict['gt_boxes'], 
+            data_dict['gt_names'],
+            data_dict['points'], 
+            data_dict['gt_boxes_mask'], 
+            rotation_perturb=config.LOCAL_ROT_NOISE,
+            center_noise_std=config.LOCAL_TRANS_NOISE_STD,
+            num_try=100
+        )
+        data_dict['gt_boxes'] = gt_boxes[data_dict['gt_boxes_mask']]
+        data_dict['gt_names'] = data_dict['gt_names'][data_dict['gt_boxes_mask']]
+        data_dict.pop('gt_boxes_mask')
+        data_dict['points'] = points
+
+        """gt_boxes = deepcopy(data_dict['gt_boxes'])
+        points = deepcopy(data_dict['points'])
+        draw_scenes(points, gt_boxes)"""
+
         return data_dict
     
     def points_sampling_aug(self, data_dict=None, config=None):

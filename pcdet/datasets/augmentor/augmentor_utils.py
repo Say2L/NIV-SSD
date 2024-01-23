@@ -4,7 +4,7 @@ import math
 import copy
 from ...utils import common_utils
 from ...utils import box_utils
-
+from ...ops.iou3d_nms.iou3d_nms_utils import boxes_bev_iou_cpu
 
 def random_flip_along_x(gt_boxes, points, return_flip=False, enable=None):
     """
@@ -48,7 +48,7 @@ def random_flip_along_y(gt_boxes, points, return_flip=False, enable=None):
     return gt_boxes, points
 
 
-def global_rotation(gt_boxes, points, rot_range, return_rot=False, noise_rotation=None):
+def global_rotation_along_z(gt_boxes, points, rot_range):
     """
     Args:
         gt_boxes: (N, 7 + C), [x, y, z, dx, dy, dz, heading, [vx], [vy]]
@@ -56,8 +56,7 @@ def global_rotation(gt_boxes, points, rot_range, return_rot=False, noise_rotatio
         rot_range: [min, max]
     Returns:
     """
-    if noise_rotation is None: 
-        noise_rotation = np.random.uniform(rot_range[0], rot_range[1])
+    noise_rotation = np.random.uniform(rot_range[0], rot_range[1])
     points = common_utils.rotate_points_along_z(points[np.newaxis, :, :], np.array([noise_rotation]))[0]
     gt_boxes[:, 0:3] = common_utils.rotate_points_along_z(gt_boxes[np.newaxis, :, 0:3], np.array([noise_rotation]))[0]
     gt_boxes[:, 6] += noise_rotation
@@ -67,8 +66,46 @@ def global_rotation(gt_boxes, points, rot_range, return_rot=False, noise_rotatio
             np.array([noise_rotation])
         )[0][:, 0:2]
 
-    if return_rot:
-        return gt_boxes, points, noise_rotation
+    return gt_boxes, points
+
+def global_rotation_along_x(gt_boxes, points, rot_range):
+    """
+    Args:
+        gt_boxes: (N, 7 + C), [x, y, z, dx, dy, dz, heading, [vx], [vy]]
+        points: (M, 3 + C),
+        rot_range: [min, max]
+    Returns:
+    """
+    noise_rotation = np.random.uniform(rot_range[0], rot_range[1])
+    points = common_utils.rotate_points_along_x(points[np.newaxis, :, :], np.array([noise_rotation]))[0]
+    gt_boxes[:, 0:3] = common_utils.rotate_points_along_x(gt_boxes[np.newaxis, :, 0:3], np.array([noise_rotation]))[0]
+    gt_boxes[:, 6] += noise_rotation
+    if gt_boxes.shape[1] > 7:
+        gt_boxes[:, 7:9] = common_utils.rotate_points_along_x(
+            np.hstack((gt_boxes[:, 7:9], np.zeros((gt_boxes.shape[0], 1))))[np.newaxis, :, :],
+            np.array([noise_rotation])
+        )[0][:, 0:2]
+
+    return gt_boxes, points
+
+def global_rotation_along_y(gt_boxes, points, rot_range):
+    """
+    Args:
+        gt_boxes: (N, 7 + C), [x, y, z, dx, dy, dz, heading, [vx], [vy]]
+        points: (M, 3 + C),
+        rot_range: [min, max]
+    Returns:
+    """
+    noise_rotation = np.random.uniform(rot_range[0], rot_range[1])
+    points = common_utils.rotate_points_along_y(points[np.newaxis, :, :], np.array([noise_rotation]))[0]
+    gt_boxes[:, 0:3] = common_utils.rotate_points_along_y(gt_boxes[np.newaxis, :, 0:3], np.array([noise_rotation]))[0]
+    gt_boxes[:, 6] += noise_rotation
+    if gt_boxes.shape[1] > 7:
+        gt_boxes[:, 7:9] = common_utils.rotate_points_along_y(
+            np.hstack((gt_boxes[:, 7:9], np.zeros((gt_boxes.shape[0], 1))))[np.newaxis, :, :],
+            np.array([noise_rotation])
+        )[0][:, 0:2]
+
     return gt_boxes, points
 
 
@@ -447,23 +484,24 @@ def local_frustum_dropout_right(gt_boxes, points, intensity_range):
     return gt_boxes, points
 
 
+@numba.njit
 def get_points_in_box(points, gt_box):
-    x, y, z = points[:, 0], points[:, 1], points[:, 2]
+    x, y, z = points[:,0], points[:,1], points[:,2]
     cx, cy, cz = gt_box[0], gt_box[1], gt_box[2]
     dx, dy, dz, rz = gt_box[3], gt_box[4], gt_box[5], gt_box[6]
     shift_x, shift_y, shift_z = x - cx, y - cy, z - cz
-    
+
     MARGIN = 1e-1
     cosa, sina = math.cos(-rz), math.sin(-rz)
     local_x = shift_x * cosa + shift_y * (-sina)
     local_y = shift_x * sina + shift_y * cosa
-    
-    mask = np.logical_and(abs(shift_z) <= dz / 2.0, 
-                          np.logical_and(abs(local_x) <= dx / 2.0 + MARGIN, 
-                                         abs(local_y) <= dy / 2.0 + MARGIN))
-    
+
+    mask = np.logical_and(np.abs(shift_z) <= dz / 2.0, \
+             np.logical_and(np.abs(local_x) <= dx / 2.0 + MARGIN, \
+                 np.abs(local_y) <= dy / 2.0 + MARGIN ))
+
     points = points[mask]
-    
+
     return points, mask
 
 
@@ -700,3 +738,207 @@ def points_down_sampling(points, gt_boxes, dist_ranges=[20, 40], keep_ranges=[[0
     boxes_keep_idxs = remove_boxes_with_no_points(sampling_points, gt_boxes, 5)
 
     return sampling_points, boxes_keep_idxs
+
+############################### START: For Per-object Augmentation##################################
+####################################################################################################
+
+@numba.njit
+def _rotation_matrix_3d_(rot_mat_T, angle, axis):
+    rot_sin = np.sin( - angle)
+    rot_cos = np.cos( - angle)
+    rot_mat_T[:] = np.eye(3)
+    if axis == 1:
+        rot_mat_T[0, 0] = rot_cos
+        rot_mat_T[0, 2] = -rot_sin
+        rot_mat_T[2, 0] = rot_sin
+        rot_mat_T[2, 2] = rot_cos
+    elif axis == 2 or axis == -1:
+        rot_mat_T[0, 0] = rot_cos
+        rot_mat_T[0, 1] = -rot_sin
+        rot_mat_T[1, 0] = rot_sin
+        rot_mat_T[1, 1] = rot_cos
+    elif axis == 0:
+        rot_mat_T[1, 1] = rot_cos
+        rot_mat_T[1, 2] = -rot_sin
+        rot_mat_T[2, 1] = rot_sin
+        rot_mat_T[2, 2] = rot_cos
+
+#@numba.njit
+def points_transform(box_points, centers, loc_transform, rot_transform):
+    num_box = centers.shape[0]
+
+    rot_mat_T = np.zeros((num_box, 3, 3), dtype=centers.dtype)
+    for i in range(num_box):
+        _rotation_matrix_3d_(rot_mat_T[i], rot_transform[i], 2)  # angle: rot_transform[i] -> rot_matrix: rot_mat_T[i]
+    
+    for i in range(num_box):
+            box_points[i][:, :3] -= centers[i, :3]
+            box_points[i][:, :3] = np.dot(box_points[i][:, :3], rot_mat_T[i])
+            box_points[i][:, :3] += centers[i, :3]
+            box_points[i][:, :3] += loc_transform[i]
+
+    return np.concatenate(box_points, axis=0)
+
+@numba.njit
+def box3d_transform_(boxes, points, loc_transform, rot_transform, valid_mask):
+    num_box = boxes.shape[0]
+    new_point_masks = []
+    for i in range(num_box):
+        if valid_mask[i]:
+            boxes[i, :3] += loc_transform[i]
+            boxes[i, 6] += rot_transform[i]
+            _, mask = get_points_in_box(points, boxes[i])
+            new_point_masks.append(mask)
+    return new_point_masks
+
+def _select_transform(transform, indices):
+    result = np.zeros((transform.shape[0], *transform.shape[2:]), dtype=transform.dtype)
+    for i in range(transform.shape[0]):
+        if indices[i] != -1:  # eles: result[i] = 0 -> no noise performed
+            result[i] = transform[i, indices[i]]
+    return result
+
+
+#@numba.njit
+def noise_per_box(boxes, valid_mask, loc_noises, rot_noises, eps=1e-6):
+    '''
+        This func aims to perform loc and rot noise no bev gt boxes, each gt box has 100 times chance to perform
+        the randomly generated noice on its corresponding box; if a box fails after max times, no noise performed
+        and return the original box.
+         - boxes: [N, 7], [x, y, z, l, w, h, r],
+         - valid_mask: [N],
+         - loc_noises: [N, M, 3], M=num_try,
+         - rot_noises: [N, M].
+    '''
+
+    num_boxes = boxes.shape[0]
+    num_tests = loc_noises.shape[1]   # num_try: 100
+    current_box = np.zeros((1, 7), dtype=boxes.dtype)
+    success_mask = -np.ones((num_boxes,), dtype=np.int64)  # default: -1
+    # print(valid_mask)
+    for i in range(num_boxes):
+        if valid_mask[i]:  # only perform noise on object of targeted class, but un-targeted objects are considered into collison test.
+            for j in range(num_tests):
+                current_box = boxes[i:i+1].copy()
+                current_box[:, :3] += loc_noises[i, j]
+                current_box[:, 6] += rot_noises[i, j]
+                coll_mat = boxes_bev_iou_cpu(current_box, boxes)  # [1, num_valid_box]
+                coll_mat[0, i] = 0
+                coll_mat = coll_mat == 0
+                if coll_mat.all():                # no collision; if loop ends without break -> no noise performed."""
+                    success_mask[i] = j               # index of selected noise
+                    boxes[i:i+1] = current_box  # i-th box updated
+                    break
+    return success_mask
+
+@numba.njit
+def points_in_boxes(points, boxes):
+    box_points = []
+    masks = []
+    for box in boxes:
+        tmp_points, tmp_masks = get_points_in_box(points, box)
+        box_points.append(tmp_points)
+        masks.append(tmp_masks)
+    return box_points, masks
+
+def noise_per_object_v4(gt_boxes, gt_names, points=None, valid_mask=None, rotation_perturb=np.pi / 4, center_noise_std=1.0,\
+                         num_try=5, data_aug_with_context=-1.0, data_aug_random_drop=-1.0):
+    """
+        perform random rotation and translation on each groundtruth independently.
+
+        Args:
+            gt_boxes: [N, 7], gt box in lidar, [x, y, z, l, w, h, rx]
+            points: [M, 4], point cloud in lidar, all points in the scene.
+            rotation_perturb: [-0.785, 0.785],
+            center_noise_std: [1.0, 1.0, 0.5],
+            global_random_rot_range: [0, 0]
+            num_try: 100
+    """
+    if not valid_mask.any():
+        return gt_boxes, points
+        
+    num_boxes = gt_boxes.shape[0]
+
+    center_noise_std = np.array(center_noise_std, dtype=gt_boxes.dtype)
+    loc_noises = np.random.normal(scale=center_noise_std, size=[num_boxes, num_try, 3])
+    rot_noises = np.random.uniform(rotation_perturb[0], rotation_perturb[1], size=[num_boxes, num_try])
+
+    offset = [0.0, 0.0, 0.0, 0.0, 0.0]
+    if data_aug_with_context > 0:   # to enlarge boxes and keep context
+        offset = [0.0, 0.0, data_aug_with_context, data_aug_with_context, 0.0]
+
+    # noise on bev_box.
+    selected_noise = noise_per_box(gt_boxes.copy(), valid_mask, loc_noises, rot_noises)  #
+
+    loc_transforms = _select_transform(loc_noises, selected_noise)
+    rot_transforms = _select_transform(rot_noises, selected_noise)
+    
+
+    ############### remove points in transformerd boxes ###############
+    box_points, point_masks = points_in_boxes(points, gt_boxes[valid_mask])
+    box_points = copy.deepcopy(box_points)
+    point_masks = np.stack(point_masks, axis=0)
+    point_masks = np.sum(point_masks, axis=0) == 0
+    points = points[point_masks]
+    centers = copy.deepcopy(gt_boxes[:, :3][valid_mask])
+
+    ##################sparse and dropout points in objects ###################
+    sparse_dropout_points_in_boxes_(box_points, gt_boxes[valid_mask], gt_names[valid_mask],loc_transforms[valid_mask])
+
+    ######################translate and rot box/points #######################
+    _ = box3d_transform_(gt_boxes, points, loc_transforms, rot_transforms, valid_mask)
+    box_points = points_transform(box_points, centers, loc_transforms[valid_mask], rot_transforms[valid_mask])
+    points = np.concatenate([points, box_points], axis=0)
+
+    return gt_boxes, points
+
+
+################################ object sparse droupout ###################################
+def model_func(x):
+    x /= 40
+    w0, w1, w2, w3, w4, bias = -1.9802, 1.6219, 0.9743, -0.7275, 0.1070, -1.9173 
+    y =  w0 * math.log(x) + w1 * x + w2 * math.pow(x, 2) + w3 * math.pow(x, 3) + w4 * math.pow(x, 4) + bias
+    return y * 1000
+
+def dist_num_points_func(raw_dist, now_dist, min_num=10):
+    raw_num_points = model_func(raw_dist)
+    now_num_points = max(model_func(now_dist), min_num)
+    return now_num_points / raw_num_points
+
+def dropout_sparse_points(points, gt_box, loc_move, thresh_num=30, min_num=10, times=3):
+    sparse_points = points#[sampling_inds]
+
+    ######## points dropout ########
+    pyramids = get_pyramids(gt_box[np.newaxis, :])[0]
+    point_masks = points_in_pyramids_mask(sparse_points, pyramids)
+    point_masks = point_masks.transpose(1, 0)
+    pyramids_points_num = np.sum(point_masks, axis=1)
+    sampling_flag = False
+    if (pyramids_points_num > thresh_num).any():
+        while times:
+            log_p = pyramids_points_num + 1
+            p = log_p / np.sum(log_p)
+            remove_pyramids_num = np.random.choice([0, 1, 2], 1, p=[0.25, 0.5, 0.25])
+            if remove_pyramids_num == 0:
+                break
+            remove_pyramids_id = np.random.choice(6, remove_pyramids_num, p=p, replace=False)
+            select_points_masks = point_masks[remove_pyramids_id]
+            select_points_masks = select_points_masks.transpose(1, 0)
+            sampling_points = sparse_points[np.logical_not(select_points_masks.any(1))]
+            if sampling_points.shape[0] > min_num:
+                sampling_flag = True
+                break
+            times -= 1
+
+    return sampling_points if sampling_flag else points
+    
+
+def sparse_dropout_points_in_boxes_(points, gt_boxes, gt_names, loc_transforms):
+    """
+        points: N x [Mi x (3 + C)]
+        boxes: N x 7
+    """
+    for i in range(gt_boxes.shape[0]):
+        if gt_names[i] != 'Car':
+            continue
+        points[i] = dropout_sparse_points(points[i], gt_boxes[i], loc_transforms[i])

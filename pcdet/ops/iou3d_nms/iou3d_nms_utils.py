@@ -17,16 +17,15 @@ def niv_nms_gpu(boxes_preds, src_scores_preds, thresh, pre_maxsize=None, norm_si
     iou_voting_scores = (ans_iou * select).sum(dim=1) / iou_voting_nums
     
     box_size_item = (boxes_preds[:, 3] * boxes_preds[:, 4]) / norm_size
-    #iou_voting_nums = iou_voting_nums / box_size_item
+    iou_voting_nums = iou_voting_nums / box_size_item
     iou_voting_items = iou_voting_nums / (1 + iou_voting_nums) * iou_voting_scores
     
     niv_scores_preds_nms = src_scores_preds * iou_voting_scores
     niv_scores_preds = src_scores_preds * torch.pow(iou_voting_items, niv_weight)
-    #scores_preds = iou_voting_nums / (1 + iou_voting_nums) * scores_preds * iou_voting_scores
     
     keep_idx, _ = nms_gpu(boxes_preds, niv_scores_preds_nms, thresh, pre_maxsize)
     
-    score_masks = niv_scores_preds > 0.3
+    score_masks = niv_scores_preds > 0.45
     score_masks = score_masks[keep_idx]
     keep_idx = keep_idx[score_masks]
 
@@ -37,7 +36,7 @@ def boxes_bev_iou_cpu(boxes_a, boxes_b):
     Args:
         boxes_a: (N, 7) [x, y, z, dx, dy, dz, heading]
         boxes_b: (M, 7) [x, y, z, dx, dy, dz, heading]
-
+    
     Returns:
         ans_iou: (N, M)
     """

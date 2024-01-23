@@ -8,6 +8,7 @@ from .center_head import CenterHead
 from .voxelnext_head import VoxelNeXtHead
 from .transfusion_head import TransFusionHead
 from .dynamic_cross_head_v1 import DynamicCrossHeadv1
+from .anchor_head_iou import AnchorHeadIOUSingle
 
 __all__ = {
     'AnchorHeadTemplate': AnchorHeadTemplate,
@@ -20,4 +21,5 @@ __all__ = {
     'VoxelNeXtHead': VoxelNeXtHead,
     'TransFusionHead': TransFusionHead,
     'DynamicCrossHeadv1': DynamicCrossHeadv1,
+    'AnchorHeadIOUSingle': AnchorHeadIOUSingle
 }
