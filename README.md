@@ -1,4 +1,4 @@
-## "NIV-SSD: Neighbor IoU-Voting Single-Stage Object Detector From Point Cloud"
+## ["NIV-SSD: Neighbor IoU-Voting Single-Stage Object Detector From Point Cloud"](https://arxiv.org/abs/2401.12447)
 
 Thanks for the [OpenPCDet](https://github.com/open-mmlab/OpenPCDet), this implementation of the NIV-SSD is mainly based on the pcdet v0.6.
 
@@ -67,4 +67,16 @@ python tools/test.py --cfg_file ${CONFIG_FILE} --ckpt ${CKPT}
 
 # e.g., 
 python tools/test.py --cfg_file tools/cfgs/kitti_models/niv-ssd.yaml --ckpt {path}
+```
+## Paper
+
+Please cite our paper if you find our work useful for your research:
+
+```
+@article{liu2024niv,
+  title={NIV-SSD: Neighbor IoU-Voting Single-Stage Object Detector From Point Cloud},
+  author={Liu, Shuai and Wang, Di and Wang, Quan and Huang, Kai},
+  journal={arXiv preprint arXiv:2401.12447},
+  year={2024}
+}
 ```
