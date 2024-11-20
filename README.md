@@ -74,9 +74,10 @@ Please cite our paper if you find our work useful for your research:
 
 ```
 @article{liu2024niv,
-  title={NIV-SSD: Neighbor IoU-Voting Single-Stage Object Detector From Point Cloud},
+  title={NIV-SSD: Neighbor IoU-voting single-stage object detector from point cloud},
   author={Liu, Shuai and Wang, Di and Wang, Quan and Huang, Kai},
-  journal={arXiv preprint arXiv:2401.12447},
+  journal={Neurocomputing},
+  pages={127987},
   year={2024}
 }
 ```
